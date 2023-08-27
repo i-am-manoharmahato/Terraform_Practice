@@ -1,82 +1,77 @@
-provider "aws" {
-  region = "ap-southeast-2"
+locals {
+  account_id = data.aws_caller_identity.current.account_id
 }
 
-resource "aws_iam_role" "lambda_acm_read_role" {
-  name = "LambdaACMReadRole"
+data "aws_iam_policy_document" "lambda_assume_policy" {
+  statement {
+    effect = "Allow"
+    principals {
+      type        = "Service"
+      identifiers = ["lambda.amazonaws.com"]
+    }
+    actions = ["sts:AssumeRole"]
+  }
+}
 
-  assume_role_policy = jsonencode({
-    Version = "2012-10-17",
-    Statement = [
-      {
-        Action = "sts:AssumeRole",
-        Effect = "Allow",
-        Principal = {
-          Service = "lambda.amazonaws.com"
-        }
-      }
+data "aws_iam_policy_document" "lambda" {
+  statement {
+    effect = "Allow"
+    actions = [
+      "logs:CreateLogGroup",
+      "logs:CreateLogStream",
+      "logs:PutLogEvents",
+      "acm:ListCertificates",
+      "acm:DescribeCertificate",
+      "acm:ListTagsForCertificate"
     ]
-  })
+    resources = ["*"]
+  }
 }
 
-resource "aws_iam_policy" "lambda_acm_read_policy" {
-  name = "LambdaACMReadPolicy"
-
-  policy = jsonencode({
-    Version = "2012-10-17",
-    Statement = [
-      {
-        Effect = "Allow",
-        Action = [
-            "logs:CreateLogGroup",
-            "logs:CreateLogStream",
-            "logs:PutLogEvents",
-            "acm:ListCertificates",
-            "acm:DescribeCertificate",
-            "acm:ListTagsForCertificate"
-        ],
-        Resource = "*"
-      }
-    ]
-  })
+resource "aws_iam_policy" "lambda" {
+  name = "${var.app_name}-lambda-iam-policy"
+  description = "IAM policy used by ${var.app_name} lambda"
+  policy = data.aws_iam_policy_document.lambda.json
 }
 
-resource "aws_iam_policy_attachment" "lambda_acm_policy_attachment" {
-  name       = "LambdaACMPolicyAttachment"
-  roles      = [aws_iam_role.lambda_acm_read_role.name]
-  policy_arn = aws_iam_policy.lambda_acm_read_policy.arn
+resource "aws_iam_role" "lambda" {
+  name = "${var.app_name}-lambda-iam-role"
+  description = "IAM role used by ${var.app_name} lambda"
+  assume_role_policy = data.aws_iam_policy_document.lambda_assume_policy.json
 }
 
-data "archive_file" "lambda_acm_zip" {
-  type        = "zip"
-  source_file = "certificate_data_extractor.py"
-  output_path = "certificate_data_extractor.zip"
+resource "aws_iam_role_policy_attachment" "lambda" {
+  role = aws_iam_role.lambda.name
+  policy_arn = aws_iam_policy.lambda.arn
 }
 
-resource "aws_lambda_function" "certificate_data_extractor" {
-  function_name    = "CertificateDataExtractor"
-  role             = aws_iam_role.lambda_acm_read_role.arn
-  handler          = "certificate_data_extractor.lambda_handler"
-  runtime          = "python3.11"
-  filename         = "certificate_data_extractor.zip"
+data "archive_file" "extract_certificate_details" {
+  type = "zip"
+  source_file = "lambda_source/extract_certificate_details.py"
+  output_path = "${var.app_name}-extract-certificate-details.zip"
 }
 
-resource "aws_cloudwatch_event_rule" "certificate_data_extractor_daily_run" {
-    name = "certificate-data-extractor-daily-run"
-    description = "Triggers the certificate-data-extractor lambda every day at 9:00 AM"
-    schedule_expression = "cron(0 9 * * ? *)"
+resource "aws_lambda_function" "extract_certificate_details" {
+  function_name = "${var.app_name}-extract-certificate-details"
+  description = "Lambda used by ${var.app_name} to extract certificate data"
+  role = aws_iam_role.lambda.arn
+  handler = "extract_certificate_details.lambda_handler"
+  runtime = "python3.11"
+  timeout = 10
+  filename = "${var.app_name}-extract-certificate-details.zip"
+  layers = [aws_lambda_layer_version.lambda_layer.arn]
 }
 
-resource "aws_cloudwatch_event_target" "certificate_data_collector_lambda_target" {
-    rule = aws_cloudwatch_event_rule.certificate_data_extractor_daily_run.name
-    target_id = "certificate_data_extractor"
-    arn = aws_lambda_function.certificate_data_extractor.arn
+data "archive_file" "lambda_layer" {
+  type = "zip"
+  source_dir = "lambda_layer/"
+  output_path = "${var.app_name}-lambda-layer.zip"
 }
 
-resource "aws_lambda_permission" "allow_cloudwatch_to_call_certificate_data_extractor" {
-    statement_id = "AllowExecutionFromCloudWatchToCertificateDataExtractor"
-    action = "lambda:InvokeFunction"
-    function_name = aws_lambda_function.certificate_data_extractor.function_name
-    principal = "events.amazonaws.com"
-    source_arn = aws_cloudwatch_event_rule.certificate_data_extractor_daily_run.arn
+resource "aws_lambda_layer_version" "lambda_layer" {
+  layer_name = "${var.app_name}-lambda_layer"
+  description = "Lambda layer used by ${var.app_name} lambda"
+  filename = "${var.app_name}-lambda-layer.zip"
+  source_code_hash = data.archive_file.lambda_layer.output_base64sha256
+  compatible_runtimes = ["python3.11"]
 }

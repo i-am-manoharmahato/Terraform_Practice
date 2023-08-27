@@ -1,10 +1,12 @@
 import boto3
-import logging
-logger = logging.getLogger()
-logger.setLevel(logging.INFO)
+import pytz
 
 def lambda_handler(event, context):
     
+    aus_eastern_timezone = pytz.timezone("Australia/Melbourne")
+    datetime_format = "%d-%m-%Y %H:%M:%S %Z"
+
+
     REGIONS = ['us-east-1', 'ap-southeast-2']
     results = []
     
@@ -32,7 +34,9 @@ def lambda_handler(event, context):
                     if (len(certificate_tag_list['Tags'])):
                         for tag in certificate_tag_list['Tags']:
                             tag_list.append(tag)
-                            
+
+                    cert_attribute_list = acm_client.describe_certificate(CertificateArn=certificate_arn)
+                    certificate_expiry_date = cert_attribute_list['Certificate']['NotAfter'].astimezone(aus_eastern_timezone).strftime(datetime_format)  
                     
                     results.append({
                         "CertificateID" : certificate_id,

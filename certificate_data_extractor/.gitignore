@@ -1,0 +1,6 @@
+*.csv
+terraform*
+.terraform*
+pytz*
+python/
+*.zip
